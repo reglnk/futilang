@@ -1,0 +1,431 @@
+
+# SAMPL build system
+
+ret0 =
+ret1 =
+ret2 =
+ret3 =
+
+arg0 =
+arg1 =
+arg2 =
+arg3 =
+
+goto run
+
+# Create a vector instance
+# ret0 - the instance pointer (like 'this' in c++)
+vector ~
+	alloc ptr 3
+	
+	# begin pointer
+	i = ptr
+	0 -> i
+	
+	# end pointer
+	i += 1
+	0 -> i
+	
+	# capacity
+	i += 1
+	0 -> i
+	
+	ret0 = ptr
+	return
+
+# Terminate vector
+# arg0 - instance pointer
+_vector ~
+	data <- arg0
+	free data
+	free arg0
+	return
+
+# Extract raw pointer from vector
+# (the vector is destroyed)
+# arg0 - instance pointer
+# ret0 - resulting array
+# ret1 - the array size
+vector_to_raw ~
+	arr = arg0
+	
+	i = arr
+	data <- i
+	i += 1
+	vend <- i
+	free arr
+	
+	vcap = vend
+	vcap -= data
+	
+	ret0 = data
+	ret1 = vcap
+	return
+
+# arg0 - instance pointer
+# arg1 - element to push back
+push_back ~
+	arr = arg0
+	el = arg1
+	
+	i = arr
+	vbeg <- i
+	
+	i += 1
+	vend <- i
+	
+	i += 1
+	vcapacity <- i
+	
+	vcap_iter = vbeg
+	vcap_iter += vcapacity
+	
+	vend < vcap_iter
+	if
+		# if capacity allows to write yet 1 element
+		el -> vend
+		vend += 1
+		
+		# update
+		i -= 1
+		vend -> i
+	else
+		# reallocate the vector
+		newcap = vcapacity
+		newcap *= 2
+		newcap += 1
+		alloc newarr newcap
+		
+		# copy all elements
+		j = newarr
+		iter = vbeg
+		iter < vend
+		while
+			t <- iter
+			t -> j
+			j += 1
+			iter += 1
+			iter < vend
+		end
+		
+		# free old memory
+		free vbeg
+		
+		# push back new element
+		# exception here
+		el -> j
+		j += 1
+		
+		# switch to new state
+		i = arr
+		newarr -> i
+		
+		i += 1
+		j -> i
+		
+		i += 1
+		newcap -> i
+	end
+	return
+
+# arg0 - instance pointer
+pop_back ~
+	arr = arg0
+	
+	i = arr
+	vbeg <- i
+	
+	i += 1
+	vend <- i
+	
+	vbeg == vend
+	if
+		return
+	end
+	
+	# pop
+	el -> vend
+	vend -= 1
+	
+	# update
+	i -= 1
+	vend -> i
+	return
+
+# join array of strings
+# arg0 - pointer
+# arg1 - end iterator
+# ret0 - joined string
+
+joinstr ~
+	result = ""
+	
+	iter = arg0
+	iter < arg1
+	while
+		t <- iter
+		result += t
+		iter += 1
+		iter < arg1
+	end
+	
+	ret0 = result
+	return
+
+# replace strings in array of strings
+# arg0 - pointer
+# arg1 - end iterator
+# arg2 - target symbol
+# arg3 - replacement
+replacestr ~
+	iter = arg0
+	iter < arg1
+	while
+		sym <- iter
+		sym == arg2
+		if
+			arg3 -> iter
+		end
+		iter += 1
+		iter < arg1
+	end
+	return
+
+# find newline
+# arg0 - pointer
+# arg1 - end iterator
+# ret0 - pointer to newline. null pointer if not found
+
+findnl ~
+	iter = arg0
+	iter < arg1
+	while
+		t <- iter
+		
+		t == "\r"
+		if
+			ret0 = iter
+			return
+		end
+		
+		t == "\n"
+		if
+			ret0 = iter
+			return
+		end
+		
+		iter += 1
+		iter < arg1
+	end
+	
+	ret0 =
+	return
+
+# join separate symbols (strings), splitting by newline symbols
+# arg0 - pointer
+# arg1 - end iterator
+# ret0 - output array
+
+joinsplit_nl ~
+	iter = arg0
+	end_it = arg1
+	
+	# create vector for lines
+	call vector
+	result = ret0
+	
+	iter < end_it
+	while
+		arg0 = iter
+		call findnl
+		endline = ret0
+		
+		if endline
+			arg1 = endline
+		else
+			arg1 = end_it
+		end
+		
+		arg0 = iter
+		iter = arg1
+		call joinstr
+		line = ret0
+		
+		# append
+		arg0 = result
+		arg1 = line
+		call push_back
+		
+		iter < end_it
+		if
+			while
+				symbol <- iter
+				symbol == "\r"
+				sf_ = sf
+				symbol == "\n"
+				sf_ += sf
+				
+				sf = sf_
+				if
+					iter += 1
+				end
+				
+				# continue the loop if (iter < end_it && (*iter == '\r' || *iter == '\n'))
+				iter < end_it
+				sf *= sf_
+			end
+		end
+		iter < end_it
+	end
+	
+	ret0 = result
+	return
+	
+main ~
+	# 1. find compilers
+	system "clang --version >.discard"
+	retcode == 0
+	if
+		toolchain = "LLVM"
+		cc = "clang"
+		cxx = "clang++"
+	else
+		system "gcc --version >.discard"
+		retcode == 0
+		if
+			toolchain = "GCC"
+			cc = "gcc"
+			cxx = "g++"
+		else
+			out ~ "Supported toolchains not found\n"
+			goto eof
+		end
+	end
+
+	out ~ "[build] Found toolchain: "
+	out ~ toolchain
+	out ~ "\n"
+
+	# 2. parse includes
+	fsize incs "includes.txt"
+	incs != 0
+	if
+		out ~ "[build] Includes found. Size: "
+		out ~ incs
+		out ~ "\n"
+
+		fread incf "includes.txt"
+		incend = incf
+		incend += incs
+		arg0 = incf
+		arg1 = incend
+		call joinstr
+		includes = ret0
+	end
+
+	# 3. parse c++ source recipe
+	fsize fs "cppsource.txt"
+	fs < 0
+	if
+		out ~ "[error] cppsource.txt not found. Exiting\n"
+		return
+	end
+	fread fil "cppsource.txt"
+
+	# make build folders
+	system "mkdir bin 1>.discard 2>&1"
+	system "mkdir obj 1>.discard 2>&1"
+	
+	fend = fil
+	fend += fs
+	
+	arg0 = fil
+	arg1 = fend
+	call joinsplit_nl
+	vec = ret0
+	free fil
+	
+	vbeg <- vec
+	vend = vec
+	vend += 1
+	vend <- vend
+
+	link_files = ""
+	
+	iter = vbeg
+	iter < vend
+	while
+		src_file <- iter
+
+		# replace / \ with __
+		obj_file = src_file
+		split ~ obj_file
+
+		fpath_len = src_file
+		length ~ fpath_len
+
+		arg0 = obj_file
+		arg1 = obj_file
+		arg1 += fpath_len
+		arg2 = "/"
+		arg3 = "__"
+		call replacestr
+		arg2 = "\\"
+		call replacestr
+
+		call joinstr
+		free obj_file
+		obj_file = ret0
+		obj_file += ".o"
+
+		link_files += " obj/"
+		link_files += obj_file
+
+		# construct the command
+		command = cxx
+		command += " -c -O2 "
+		command += src_file
+		command += " -o obj/"
+		command += obj_file
+		command += " "
+		command += includes
+
+		out ~ "[build] "
+		out ~ command
+		out ~ "\n"
+		system command
+		if retcode
+			out ~ "[error] code: "
+			out ~ retcode
+			out ~ "\n"
+			return
+		end
+
+		iter += 1
+		iter < vend
+	end
+
+	if link_files
+		command = cxx
+		command += link_files
+		command += " -o bin/sampl"
+		out ~ "[build] "
+		out ~ command
+		out ~ "\n"
+		system command
+		if retcode
+			out ~ "[error] code: "
+			out ~ retcode
+			out ~ "\n"
+			return
+		end
+	else
+		out ~ "[error] No files to link"
+		return
+	end
+	return
+
+run ~
+call main
+
+eof ~
