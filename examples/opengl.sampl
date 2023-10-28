@@ -1,0 +1,253 @@
+
+width =;
+height =;
+neg =; 0.0-1.0
+endl="\n"
+
+call main;
+return
+
+read_all ~
+	filename =;
+	fp =; call fopen; filename; "rb"
+	if !; fp
+		return; 0
+	end
+	call fseek; # todo
+	return
+
+vec3_write ~
+	dest =;
+	ind =;
+	x =;
+	y =;
+	z =;
+	off =; ind * 3
+	call writef32; dest; off; x
+	call writef32; dest; off + 1; y
+	call writef32; dest; off + 2; z
+	return
+
+vec3_read ~
+	src =;
+	index =;
+	off =; index * 3
+	x =; call readf32; src; off
+	y =; call readf32; src; off + 1
+	z =; call readf32; src; off + 2
+	return; x; y; z
+
+keycallbk ~
+	win =;
+	key =;
+	scancode =;
+	action =;
+	mods =;
+
+	out ~"\n"; out ~key
+	return
+
+fbcallbk ~
+	win =;
+	width =;
+	height =;
+
+	out ~ "width, height: ";
+	out ~ width;
+	out ~ "; ";
+	out ~ height;
+	out ~ "\n";
+
+	call glViewport; 0; 0; width; height
+	return
+
+main ~
+	call glfwInit
+	call glfwWindowHint; GLFW_CONTEXT_VERSION_MAJOR; 3
+	call glfwWindowHint; GLFW_CONTEXT_VERSION_MINOR; 3
+	call glfwWindowHint; GLFW_OPENGL_PROFILE; GLFW_OPENGL_CORE_PROFILE
+
+	winTitle = "OpenGL Triangle";
+	window =; call glfwCreateWindow; 800; 600; winTitle;
+
+	if !; window
+		out ~ "Failed to create window\n";
+		call glfwTerminate
+		return
+	end
+
+	call glfwMakeContextCurrent; window
+	call glfwSetKeyCallback; window; keycallbk
+	call glfwSetFramebufferSizeCallback; window; fbcallbk
+	call glfwSwapInterval; 1
+
+	call glfwSetInputMode; window; GLFW_CURSOR; GLFW_CURSOR_NORMAL
+	call gladLoaderLoadGL;
+
+	## ==================================================
+	# loading model data (let it be single triangle)
+
+	vao =; call newi32; 10
+	call glGenVertexArrays; 1; vao
+	call glBindVertexArray; call readi32; vao; 0
+
+	vertices =; call newf32; 18
+	call vec3_write; vertices; 0; neg*0.5; neg*0.5; 0.0
+	call vec3_write; vertices; 1; 1.0; 0.0; 0.0
+	call vec3_write; vertices; 2; 0.0; 0.7; 0.0
+	call vec3_write; vertices; 3; 0.0; 1.0; 0.0
+	call vec3_write; vertices; 4; 0.5; neg*0.5; 0.0
+	call vec3_write; vertices; 5; 0.0; 0.0; 1.0
+
+	vbo =; call newi32; 1
+	call glGenBuffers; 1; vbo
+	call glBindBuffer; GL_ARRAY_BUFFER; call readi32; vbo; 0
+	call glBufferData; GL_ARRAY_BUFFER; 72; vertices; GL_DYNAMIC_DRAW
+
+	indexes =; call newi32; 3
+	call writei32; indexes; 0; 0
+	call writei32; indexes; 1; 1
+	call writei32; indexes; 2; 2
+
+	ebo =; call newi32; 1
+	call glGenBuffers; 1; ebo
+	call glBindBuffer; GL_ELEMENT_ARRAY_BUFFER; call readi32; ebo; 0
+	call glBufferData; GL_ELEMENT_ARRAY_BUFFER; 12; indexes; GL_STATIC_DRAW
+
+	call glVertexAttribPointer; 0; 3; GL_FLOAT; GL_FALSE; 24; 0
+	call glEnableVertexAttribArray; 0
+
+	call glVertexAttribPointer; 1; 3; GL_FLOAT; GL_FALSE; 24; 12
+	call glEnableVertexAttribArray; 1
+
+	call glBindVertexArray; 0
+
+	## =============================================
+	# Read vertex shader
+
+	vshSource = "#version 330 core\n"
+	vshSource += "layout (location = 0) in vec3 aPos;\n"
+	vshSource += "layout (location = 1) in vec3 aColor;\n"
+	vshSource += "out vec3 fColor;\n"
+	vshSource += "void main()\n"
+	vshSource += "{\n"
+	vshSource += "  fColor = aColor;\n"
+	vshSource += "  gl_Position = vec4(aPos.x, aPos.y, aPos.z, 1.0);\n"
+	vshSource += "}\n"
+
+	fshSource = "#version 330 core\n"
+	fshSource += "out vec4 FragColor;\n"
+	fshSource += "in vec3 fColor;\n"
+	fshSource += "void main() {\n"
+	fshSource += "  FragColor = vec4(fColor.x, fColor.y, fColor.z, 1.0f);\n"
+	fshSource += "}\n"
+
+	# clear value stack
+	stack;
+
+	vshLen =; call strlen; vshSource
+	fshLen =; call strlen; fshSource
+	vshCstr =; call to_cstr; vshSource
+	fshCstr =; call to_cstr; fshSource
+
+	tp =; type ~ vshCstr;
+	out ~ tp;
+	out ~ "\n"
+
+	out ~ "length vs: ";
+	out ~ "\n"; out ~ vshLen;
+
+	out ~ "length fs: ";
+	out ~ "\n"; out ~ fshLen;
+
+	# intended to have type 'const char **'
+	# no reference can be taken in SAMPL, so allocate new raw memory
+	shaderSourceArr =; call newvp; 1
+
+	vertexShader =; call glCreateShader; GL_VERTEX_SHADER
+	call writevp; shaderSourceArr; 0; vshCstr
+	call glShaderSource; vertexShader; 1; shaderSourceArr; 0
+	call glCompileShader; vertexShader
+
+	successp =; call newi32; 1
+	call glGetShaderiv; vertexShader; GL_COMPILE_STATUS; successp
+	success =; call readi32; successp; 0
+
+	if !; success
+		out ~ "Failed to compile vertex shader\n";
+		infoLog =; call newi8; 1024
+		call glGetShaderInfoLog; vertexShader; 1024; 0; infoLog
+		logLen =; call strlen; infoLog
+		info =; call to_string; infoLog; logLen;
+		out ~ "info log: ";
+		out ~ info;
+		out ~ "\n";
+		call deli8; infoLog
+		call glfwTerminate;
+		return;
+	end
+
+	fragmentShader =; call glCreateShader; GL_FRAGMENT_SHADER
+	call writevp; shaderSourceArr; 0; fshCstr
+	call glShaderSource; fragmentShader; 1; shaderSourceArr; 0
+	call glCompileShader; fragmentShader
+
+	call glGetShaderiv; vertexShader; GL_COMPILE_STATUS; successp
+	success =; call readi32; successp; 0
+
+	if !; success
+		out ~ "Failed to compile fragment shader\n";
+		infoLog =; call newi8; 1024
+		call glGetShaderInfoLog; fragmentShader; 1024; 0; infoLog
+		logLen =; call strlen; infoLog
+		info =; call to_string; infoLog; logLen;
+		out ~ "info log: ";
+		out ~ info;
+		out ~ "\n";
+		call deli8; infoLog
+		call glfwTerminate;
+		return;
+	end
+
+	shaderProg =; call glCreateProgram;
+	if !; shaderProg
+		out ~ "Failed to create shader program\n";
+		call glfwTerminate;
+		return;
+	end
+
+	call glAttachShader; shaderProg; vertexShader
+	call glAttachShader; shaderProg; fragmentShader
+	call glLinkProgram; shaderProg
+
+	# call glDeleteShader; vertexShader
+	# call glDeleteShader; fragmentShader
+
+	angle =; 0.0
+
+	while !; call glfwWindowShouldClose; window
+		call glfwPollEvents;
+		call glClear; GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT
+		call glUseProgram; shaderProg
+		call glBindVertexArray; call readi32; vao; 0
+		call glDrawElements; GL_TRIANGLES; 3; GL_UNSIGNED_INT; 0
+
+		pi23 =; 6.283185 / 3
+
+		call vec3_write; vertices; 0; call sin; angle - pi23; call cos; angle - pi23; 0.0
+		call vec3_write; vertices; 2; call sin; angle      ; call cos; angle      ; 0.0
+		call vec3_write; vertices; 4; call sin; angle + pi23; call cos; angle + pi23; 0.0
+
+		call glBindBuffer; GL_ARRAY_BUFFER; call readi32; vbo; 0
+		call glBufferData; GL_ARRAY_BUFFER; 72; vertices; GL_DYNAMIC_DRAW
+		call glBindVertexArray; 0
+		call glfwSwapBuffers; window
+
+		stack; angle += 0.07
+	end
+
+	out ~ "Exiting...\n"
+
+	call glfwTerminate;
+	return
+
