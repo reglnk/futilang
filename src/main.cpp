@@ -410,6 +410,17 @@ public:
 	}
 };
 
+int slDoFile(slContext &slCtx, const char *filename);
+
+std::string &slPushError(slContext &slCtx, const char *text, int pos, int line) {
+	slCtx.stackTraceback.push_back (
+		(std::stringstream() << "at " << line + 1 << " (" << pos <<
+		"): " << text).str()
+	);
+	auto &bk = slCtx.stackTraceback.back();
+	return bk;
+};
+
 int slParseBlock(const char *buf, const char *end, slParseData &dat)
 {
 	if (buf == end)
@@ -561,7 +572,7 @@ int slCallFunc (
 ) {
 	auto gv = slCtx.evaluate(p.part2);
 	if (gv.type == Variable::Type::Pointer && gv.value == "") {
-		pushError("calling null pointer", p.beg1 - buf);
+		slPushError(slCtx, "calling null pointer", p.beg1 - buf, lineNum);
 		return SL_ERROR;
 	}
 
@@ -569,19 +580,19 @@ int slCallFunc (
 		int fn_id;
 		gv.get(fn_id);
 		if (fn_id >= slCtx.nativeFunctions.size()) {
-			pushError("invalid native function", p.beg1 - buf);
+			slPushError(slCtx, "invalid native function", p.beg1 - buf, lineNum);
 			return SL_ERROR;
 		}
 		int res = slCtx.nativeFunctions[fn_id](&slCtx);
 		if (res != SL_OK) {
-			pushError((std::string("calling native function ") + p.part2).c_str(), p.beg2 - buf);
+			slPushError(slCtx, (std::string("calling native function ") + p.part2).c_str(), p.beg2 - buf, lineNum);
 		}
 		return res;
 	}
 	int newln;
 	gv.get(newln);
 	if (newln == 0) {
-		pushError("invalid label", p.beg1 - buf);
+		slPushError(slCtx, "invalid label", p.beg1 - buf, lineNum);
 		return SL_ERROR;
 	}
 
@@ -597,12 +608,7 @@ int slDoBlock(slContext &slCtx, const char *buf, int lineNum, slParseData const 
 	const auto pushError = [&](const char *text, int pos, int line = -1) {
 		if (line == -1)
 			line = lineNum;
-		slCtx.stackTraceback.push_back (
-			(std::stringstream() << "at " << line + 1 << " (" << pos <<
-			"): " << text).str()
-		);
-		auto &bk = slCtx.stackTraceback.back();
-		return bk;
+		return slPushError(slCtx, text, pos, line);
 	};
 	const auto errStackEmpty = [&](int pos, int line = -1) {
 		pushError("stack is empty", pos, line);
@@ -1135,7 +1141,7 @@ int slDoBlock(slContext &slCtx, const char *buf, int lineNum, slParseData const 
 		// [1]: size
 		// [2]: constructor function
 		// [3]: destructor function
-		int res = slCallFunction(slCtx, ptr[0], buf, lineNum, p, change);
+		int res = slCallFunc(slCtx, ptr[0], buf, lineNum, p, change);
 		if (res != SL_OK)
 			return SL_ERROR;
 
@@ -1148,9 +1154,9 @@ int slDoBlock(slContext &slCtx, const char *buf, int lineNum, slParseData const 
 
 		for (size_t i = 0; i != arrlen; ++i)
 		{
-			Variable pt((void *)(pptr + [i * objsize]));
+			Variable pt((void *)(pptr + i * objsize));
 			slCtx.valueStack.push_back(std::move(pt));
-			int rr = slCallFunction(slCtx, ptr[2], buf, lineNum, p, change);
+			int rr = slCallFunc(slCtx, ptr[2], buf, lineNum, p, change);
 			if (res != SL_OK)
 				return SL_ERROR;
 		}
@@ -1284,7 +1290,8 @@ int slDoBlock(slContext &slCtx, const char *buf, int lineNum, slParseData const 
 	}
 	else if (p.part1 == "call")
 	{
-
+		int res = slCallFunc(slCtx, slCtx.evaluate(p.part2), buf, lineNum, p);
+		return res == SL_RETURN ? SL_OK : res;
 	}
 	else if (p.part1 == "alloc")
 	{
@@ -1304,6 +1311,22 @@ int slDoBlock(slContext &slCtx, const char *buf, int lineNum, slParseData const 
 		left.get(arr);
 		left.value = "";
 		delete[] reinterpret_cast<Variable *>(arr);
+	}
+	else if (p.part1 == "require")
+	{
+		Variable filename = slCtx.evaluate(p.part2);
+		std::string fname;
+		filename.get(fname);
+		int res = slDoFile(slCtx, fname.c_str());
+		return res == SL_RETURN ? SL_OK : res;
+	}
+	else if (p.part1 == "throw")
+	{
+		Variable filename = slCtx.evaluate(p.part2);
+		std::string e;
+		filename.get(e);
+		pushError(e.c_str(), p.beg2 - buf);
+		return SL_ERROR;
 	}
 	else if (p.part1.size())
 	{
@@ -1421,7 +1444,7 @@ void loadlibs(slContext &ctx)
 			res = Variable(::strlen(s));
 		}
 
-		ctx->valueStack.push_back(res);
+		ctx->valueStack.push_back(std::move(res));
 		return SL_OK;
 	});
 
@@ -2609,23 +2632,21 @@ void loadlibs(slContext &ctx)
 	});
 }
 
-int slDoFile(const char *filename)
+int slDoFile(slContext &slCtx, const char *filename)
 {
 	FILE *fin = fopen(filename, "r");
 	if (!fin)
 		return SL_ERROR;
-	
-	slContext slCtx;
+
+	int ln = slCtx.code.size();
+	const int newcode_begin = ln;
 	
 	char buf[1024];
 	while (fgets(buf, 1023, fin))
 		slCtx.code.push_back(std::string(buf));
 	fclose(fin);
-
-	loadlibs(slCtx);
 	
 	// preload labels
-	int ln = 0;
 	while (ln < slCtx.code.size())
 	{
 		int next;
@@ -2635,7 +2656,45 @@ int slDoFile(const char *filename)
 		ln = next;
 	}
 	
-	// execute code
+	ln = slCtx.line; // backup line
+	slCtx.line = newcode_begin; // start executing new code
+	const size_t current_end = slCtx.code.size(); // dont forget that executed code may include other files and increase code size
+
+	while (slCtx.line < current_end)
+	{
+		int next;
+		int sr = slDoString(slCtx, slCtx.line, &next);
+		if (sr == SL_ERROR) {
+			std::cout << "[Exception encountered]\n";
+			for (auto const &e: slCtx.stackTraceback) {
+				std::cout << "    " << e << '\n';
+			}
+			return sr;
+		}
+		if (sr == SL_RETURN)
+			break;
+		slCtx.line = next;
+	}
+
+	slCtx.line = ln;
+	return SL_OK;
+}
+
+int slDoFile(const char *filename)
+{
+	slContext slCtx;
+	loadlibs(slCtx);
+	return slDoFile(slCtx, filename);
+}
+
+int main(int argc, char **argv)
+{
+	if (argc >= 2)
+		return slDoFile(argv[1]);
+
+	slContext slCtx;
+	loadlibs(slCtx);
+
 	while (slCtx.line < slCtx.code.size())
 	{
 		int next;
@@ -2651,13 +2710,40 @@ int slDoFile(const char *filename)
 			break;
 		slCtx.line = next;
 	}
-	return SL_OK;
-}
 
-int main(int argc, char **argv)
-{
-	if (argc < 2)
-		return 1;
-	
-	return slDoFile(argv[1]);
+	std::string codeline;
+	bool ignore = false;
+	for (;;)
+	{
+		std::cout << (slCtx.code.size() + 1);
+		if (ignore)
+			std::cout << " i";
+		std::cout << "> ";
+		std::getline(std::cin, codeline, '\n');
+
+		if (!codeline.size())
+			ignore = false;
+
+		slCtx.code.push_back(codeline);
+		std::vector<slParseData> pdata;
+		slParseString(codeline.c_str(), pdata);
+
+		if (ignore)
+			continue;
+
+		slCtx.line = slCtx.code.size() - 1;
+		int sr = slDoString(slCtx, slCtx.line, &slCtx.line);
+		if (sr == SL_ERROR) {
+			std::cout << "[Exception encountered]\n";
+			for (auto const &e: slCtx.stackTraceback) {
+				std::cout << "    " << e << '\n';
+			}
+		}
+		if (sr == SL_RETURN)
+			break;
+
+		if (pdata.size() && pdata[0].part2 == "~" && !pdata[0].part3.size())
+			ignore = true;
+	}
+	return SL_OK;
 }
