@@ -1052,7 +1052,7 @@ int slDoBlock(slContext &slCtx, const char *buf, int lineNum, slParseData const 
 				// @todo optimize: pick ready slParseData from slCtx instead of this
 				if (p.part1 == "end")
 					--lvl;
-				else if (p.part1 == "while" || p.part1 == "if")
+				else if (p.part1 == "while" || p.part1 == "if" || p.part1 == "try")
 					++lvl;
 				if (!lvl) {
 					brk = true;
@@ -1192,7 +1192,7 @@ int slDoBlock(slContext &slCtx, const char *buf, int lineNum, slParseData const 
 			{
 				if (p.part1 == "end")
 					--lvl;
-				else if (p.part1 == "if" || p.part1 == "while")
+				else if (p.part1 == "if" || p.part1 == "while" || p.part1 == "try")
 					++lvl;
 				else if (!sep && p.part1 == "else")
 					sep = l;
@@ -1292,6 +1292,80 @@ int slDoBlock(slContext &slCtx, const char *buf, int lineNum, slParseData const 
 	{
 		int res = slCallFunc(slCtx, slCtx.evaluate(p.part2), buf, lineNum, p);
 		return res == SL_RETURN ? SL_OK : res;
+	}
+	else if (p.part1 == "try")
+	{
+		int l;
+		int lvl = 1;
+		int sep = 0; // position of catch
+		for (l = lineNum + 1; l != slCtx.code.size(); ++l)
+		{
+			std::vector<slParseData> pd;
+			int lr = slParseString(slCtx.code[l].c_str(), pd);
+			bool brk = false;
+			for (auto const &p: pd)
+			{
+				if (p.part1 == "end")
+					--lvl;
+				else if (p.part1 == "if" || p.part1 == "while" || p.part1 == "try")
+					++lvl;
+				else if (!sep && p.part1 == "catch")
+					sep = l;
+				if (!lvl) {
+					brk = true;
+					break;
+				}
+			}
+			if (brk)
+				break;
+		}
+		if (lvl) {
+			pushError("unclosed 'try'", p.beg1 - buf, l);
+			return SL_ERROR;
+		}
+		if (!sep) {
+			pushError("missing 'catch' block", p.beg1 - buf, l);
+			return SL_ERROR;
+		}
+
+		// execute 'try' block
+		bool ev = false;
+		for (int ll = lineNum + 1; ll < sep; )
+		{
+			int lr = slDoString(slCtx, ll, &ll);
+			if (lr == SL_ERROR) {
+				ev = true;
+				slCtx.stackTraceback.clear();
+				break;
+			}
+			else {
+				if (lr == SL_BREAK)
+					return SL_BREAK;
+				if (lr == SL_CONTINUE)
+					return SL_CONTINUE;
+				if (lr == SL_RETURN)
+					return SL_RETURN;
+			}
+		}
+
+		// catch block
+		if (ev)
+		{
+			for (int ll = sep + 1; ll < l; )
+			{
+				int lr = slDoString(slCtx, ll, &ll);
+				if (lr == SL_ERROR)
+					return SL_ERROR;
+				if (lr == SL_BREAK)
+					return SL_BREAK;
+				if (lr == SL_CONTINUE)
+					return SL_CONTINUE;
+				if (lr == SL_RETURN)
+					return SL_RETURN;
+			}
+		}
+		if (change) *change = l + 1;
+		return SL_OK;
 	}
 	else if (p.part1 == "alloc")
 	{
