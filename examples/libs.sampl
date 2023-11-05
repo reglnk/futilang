@@ -1,0 +1,54 @@
+return;
+
+fact ~
+	x =;
+	y =; 1
+	while; x > 1
+		y *= x;
+		x -= 1;
+	end
+	return; y
+
+print ~
+	x =;
+	out ~ x
+	out ~ "\n";
+	return
+
+castd ~
+	v =;
+	type =;
+	if; type == "d"
+		number ~ v;
+		return; v
+	end
+	if; type == "s"
+		string ~ v;
+		return; v
+	end
+	if; type == "d"
+		pointer ~ v;
+		return; v
+	end
+	throw "Invalid type"
+
+printf ~
+	fmt =;
+	length =; call strlen; fmt
+	cstr =; call to_cstr; fmt
+
+	iter =; 0
+	while; iter < length
+		Ch =; call readi8; cstr; iter
+		Ch1 =; call to_string; Ch
+		if; Ch1 == "%"
+			arg =;
+			out ~ arg
+		else
+			out ~ Ch1
+		end
+		iter =; iter + 1
+	end
+	return
+
+

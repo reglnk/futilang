@@ -1,3 +1,6 @@
+require "libs.sampl"
+
+call print; 78
 
 width =;
 height =;
@@ -235,7 +238,7 @@ main ~
 		pi23 =; 6.283185 / 3
 
 		call vec3_write; vertices; 0; call sin; angle - pi23; call cos; angle - pi23; 0.0
-		call vec3_write; vertices; 2; call sin; angle      ; call cos; angle      ; 0.0
+		call vec3_write; vertices; 2; call sin; angle       ; call cos; angle       ; 0.0
 		call vec3_write; vertices; 4; call sin; angle + pi23; call cos; angle + pi23; 0.0
 
 		call glBindBuffer; GL_ARRAY_BUFFER; call readi32; vbo; 0
