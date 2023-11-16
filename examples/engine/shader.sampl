@@ -1,0 +1,114 @@
+include "require.sampl"
+
+call require; "libs.sampl"
+
+Shader =; {}
+Shader ] "__init__"; Shader__init
+Shader ] "__destroy__"; Shader__destroy
+Shader ] "compile"; Shader__compile
+Shader ] "link"; Shader__link
+Shader ] "use"; Shader__use
+template ~ Shader
+
+return; Shader
+
+Shader__init ~
+	this =;
+	this ] "shaderProg"; null
+	this ] "vertexShader"; null
+	this ] "fragmentShader"; null
+	return; this
+
+Shader__destroy ~
+	this =;
+	if; this . shaderProg
+		call printf; "deleting program %\n"; this . shaderProg
+		call glDeleteProgram; this . shaderProg
+	end
+	return
+
+Shader__use ~
+	this =;
+	call glUseProgram; this . shaderProg
+	return
+
+Shader__compile ~
+	this =;
+	source =; # string
+	tp =; # GLenum
+
+	shader_id =; null
+	if; tp == GL_VERTEX_SHADER
+		shader_id =; "vertexShader"
+	else
+		if; tp == GL_FRAGMENT_SHADER
+			shader_id =; "fragmentShader"
+		else
+			throw "bad shader type"
+		end
+	end
+
+	shLen =; call strlen; source
+	shCstr =; call to_cstr; source
+
+	# intended to have type 'const char **'
+	# variable address cannot be taken in SAMPL, so allocate new raw memory
+	shaderSourceArr =; call newvp; 1
+
+	shader =; call glCreateShader; tp
+	call writevp; shaderSourceArr; 0; shCstr
+	call glShaderSource; shader; 1; shaderSourceArr; 0
+	call glCompileShader; shader
+
+	# free memory
+	call delvp; shaderSourceArr
+
+	successp =; call newi32; 1
+	call glGetShaderiv; shader; GL_COMPILE_STATUS; successp
+	success =; call readi32; successp; 0
+	call deli32; successp
+
+	if !; success
+		# @todo add shader type to info
+		out ~ "Failed to compile shader\n";
+		infoLog =; call newi8; 1024
+		call glGetShaderInfoLog; shader; 1024; 0; infoLog
+		logLen =; call strlen; infoLog
+		info =; call to_string; infoLog; logLen;
+		call printf; "info log: %\n"; info
+		call deli8; infoLog
+		return; 1
+	end
+
+	this ] shader_id; shader
+	return; 0
+
+Shader__link ~
+	this =;
+
+	if !; this . shaderProg
+		this ] "shaderProg"; call glCreateProgram;
+		if !; this . shaderProg
+			out ~ "Failed to create shader program\n";
+			return; 1
+		end
+	end
+
+	if !; this . vertexShader
+		out ~ "missing vertex shader\n";
+		return; 1
+	end
+	if !; this . fragmentShader
+		out ~ "missing fragment shader\n";
+		return; 1
+	end
+
+	call glAttachShader; this . shaderProg; this . vertexShader
+	call glAttachShader; this . shaderProg; this . fragmentShader
+	call glLinkProgram; this . shaderProg
+
+	# @todo get link status
+
+	# call glDeleteShader; this . vertexShader
+	# call glDeleteShader; this . fragmentShader
+	return; 0

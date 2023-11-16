@@ -21,9 +21,14 @@
 #define SL_RETURN 5
 #define SL_UNDEFINED 0xffffffff
 
+// @todo more info in pointers
+
 namespace fs = std::filesystem;
 
 class slContext;
+class Variable;
+
+typedef std::unordered_map<std::string, Variable> slMetatable;
 
 class Variable
 {
@@ -33,8 +38,15 @@ public:
 		String,
 		Bool,
 		Number,
-		Pointer,
-		Function
+		Pointer, // void *
+		Function,
+		Metatable,
+
+		Template, // describes a type
+		Instance, // instance of some template
+		Reference, // handle of instance
+
+		ExtPointer, // .meta points to another variable of type Object
 	};
 
 	enum class Rel
@@ -45,6 +57,11 @@ public:
 		Greater,
 		Undefined
 	};
+
+	// type chains:
+	// ExtPointer --> Number
+	// ExtPointer --> ExtPointer --> Number
+	// ExtPointer --> ExtPointer --> Template
 
 	Type type;
 	union {
@@ -62,31 +79,60 @@ public:
 		double d;
 	} value;
 
-	static constexpr unsigned f_signed = 0x1000;
-	static constexpr unsigned f_float = 0x2000;
-	static constexpr unsigned f_flags = 0x3000;
-	unsigned meta = 0u;
+	static constexpr int f_signed = 0x1000;
+	static constexpr int f_float = 0x2000;
+	static constexpr int f_flags = 0x3000;
+	int meta = 0;
 
 	Variable(): type(Type::Pointer) {
 		value.p = nullptr;
 	}
 
+protected:
+	constexpr inline void mCopyVar(const Variable &v)
+	{
+		if (type == Type::String)
+			value.p = new std::string(*reinterpret_cast<std::string *>(v.value.p));
+		else if (type == Type::Metatable || type == Type::Template || type == Type::Instance)
+			value.p = new slMetatable(*reinterpret_cast<slMetatable *>(v.value.p));
+		else {
+			value = v.value;
+			if (type == Type::Reference)
+				++reinterpret_cast<Variable *>(value.p)->meta; // increase refcount
+		}
+	}
+	constexpr inline void mMoveVar(Variable &&rv)
+	{
+		switch (type)
+		{
+			case Type::String:
+			case Type::Metatable:
+			case Type::Template:
+			case Type::Instance:
+			case Type::Reference:
+				value.p = rv.value.p;
+				rv.type = Type::Pointer;
+				rv.value.p = nullptr;
+				break;
+			default:
+				value = rv.value;
+		}
+	}
+
+public:
+	template<typename T>
+	constexpr inline T *pointer() {
+		return reinterpret_cast<T *>(value.p);
+	}
+
 	Variable(const Variable &v): type(v.type), meta(v.meta)
 	{
-		if (type != Type::String)
-			value = v.value;
-		else value.p = new std::string(*reinterpret_cast<std::string *>(v.value.p));
+		mCopyVar(v);
 	}
 
 	Variable(Variable &&rv): type(rv.type), meta(rv.meta)
 	{
-		if (type != Type::String)
-			value = rv.value;
-		else {
-			value.p = rv.value.p;
-			rv.type = Type::Pointer;
-			rv.value.p = nullptr;
-		}
+		mMoveVar(std::move(rv));
 	}
 
 	Variable &operator =(const Variable &v)
@@ -94,10 +140,7 @@ public:
 		type = v.type;
 		meta = v.meta;
 
-		if (type != Type::String)
-			value = v.value;
-		else value.p = new std::string(*reinterpret_cast<std::string *>(v.value.p));
-
+		mCopyVar(v);
 		return *this;
 	}
 
@@ -106,13 +149,7 @@ public:
 		type = rv.type;
 		meta = rv.meta;
 
-		if (type != Type::String)
-			value = rv.value;
-		else {
-			value.p = rv.value.p;
-			rv.type = Type::Pointer;
-			rv.value.p = nullptr;
-		}
+		mMoveVar(std::move(rv));
 		return *this;
 	}
 
@@ -168,17 +205,28 @@ public:
 		value.p = const_cast<void *>(val);
 	}
 
+	Variable(slMetatable *val, Type tp = Type::Metatable): type(tp) {
+		value.p = reinterpret_cast<void *>(val);
+	}
+
 	~Variable() {
-		if (type == Type::String) {
+		if (type == Type::String)
 			delete reinterpret_cast<std::string *>(value.p);
+		else if (type == Type::Metatable || type == Type::Template)
+			delete reinterpret_cast<slMetatable *>(value.p);
+		else if (type == Type::Reference) {
+			auto ptr = pointer<Variable>();
+			if (!--ptr->meta)
+				delete ptr;
 		}
+		// Type::Instance should never appear here
 	}
 
 	void get(bool &v) const
 	{
 		if (type == Type::Number)
 		{
-			unsigned cmeta = meta & (~f_flags);
+			int cmeta = meta & (~f_flags);
 			if (meta & f_float)
 			{
 				if (cmeta == sizeof(float))
@@ -233,7 +281,7 @@ public:
 	{
 		if (type == Type::Number || type == Type::Function)
 		{
-			unsigned cmeta = meta & (~f_flags);
+			int cmeta = meta & (~f_flags);
 			if (meta & f_float)
 			{
 				if (cmeta == sizeof(float))
@@ -291,7 +339,7 @@ public:
 	{
 		if (type == Type::Number || type == Type::Function)
 		{
-			unsigned cmeta = meta & (~f_flags);
+			int cmeta = meta & (~f_flags);
 			if (meta & f_float)
 			{
 				if (cmeta == sizeof(float))
@@ -330,7 +378,7 @@ public:
 	void get(double &v) const {
 		if (type == Type::Number)
 		{
-			unsigned cmeta = meta & (~f_flags);
+			int cmeta = meta & (~f_flags);
 			if (meta & f_float)
 			{
 				if (cmeta == sizeof(float))
@@ -377,7 +425,7 @@ public:
 		}
 		else if (type == Type::Number || type == Type::Function)
 		{
-			unsigned cmeta = meta & (~f_flags);
+			int cmeta = meta & (~f_flags);
 			std::stringstream sst;
 			if (meta & f_float)
 			{
@@ -542,6 +590,10 @@ bool isOper(char s)
 		case '&':
 		case '|':
 		case '^':
+		case '[':
+		case ']':
+		// case '.': breaks floating point numbers @fixme
+		case ':':
 			return true;
 		default:
 			return false;
@@ -606,9 +658,10 @@ public:
 	std::vector<CacheEntry> codecache; // stores parsed code
 	std::vector<slScopeData> callStack;
 	std::vector<Variable> valueStack;
-	std::unordered_map<std::string, Variable> vars;
+	std::unordered_map<std::string, Variable> vars; // globals
 	std::unordered_map<std::string, Variable> literals;
 	std::unordered_map<std::string, int> callbacks;
+	std::vector<Variable> typevars;
 	std::vector<std::function<int(slContext *)>> nativeFunctions;
 	std::vector<std::string> stackTraceback;
 
@@ -643,8 +696,11 @@ public:
 
 	Variable evaluate(std::string const &part)
 	{
-		if (!part.size())
+		if (!part.size() || part == "null")
 			return Variable();
+
+		if (part == "{}")
+			return Variable(new slMetatable {});
 
 		if (part.size() >= 2 && part[0] == '"' && part[part.size() - 1] == '"') {
 			char *mem = new char[part.size() - 2];
@@ -703,6 +759,18 @@ public:
 		if (vrf)
 			return vrf;
 
+		if (part == "null")
+		{
+			auto &lp = literals[part] = Variable();
+			return &lp;
+		}
+
+		if (part == "{}")
+		{
+			auto &lp = literals[part] = Variable(new slMetatable {});
+			return &lp;
+		}
+
 		bool isfloat = false;
 		if (isNumber(part, &isfloat))
 		{
@@ -756,6 +824,14 @@ public:
 		return nullptr;
 	}
 };
+
+int slCallFunc (
+	slContext &slCtx,
+	Variable const &gv,
+	int lineNum,
+	slParseData *p = nullptr,
+	int *change = nullptr
+);
 
 int slDoFile(slContext &slCtx, const char *filename, bool fullpath = true);
 
@@ -920,13 +996,51 @@ int slPreloadString(slContext &slCtx, int lineNum, int *change = nullptr)
 
 int slDoString(slContext &slCtx, int lineNum, int *change = nullptr);
 
+// run garbage collector at top of call stack
+int slRunGC(slContext &slCtx, int lineNum)
+{
+	auto &st = slCtx.callStack.back();
+	int result = SL_OK;
+
+	for (auto &pair: st.locals)
+	{
+		Variable &v = pair.second;
+		if (v.type == Variable::Type::Reference)
+		{
+			auto inst = v.pointer<Variable>();
+			--inst->meta;
+
+			if (!inst->meta)
+			{
+				int res = SL_OK;
+				auto mt = inst->pointer<slMetatable>();
+				if (mt->count("__destroy__")) {
+					slCtx.valueStack.push_back(std::move(v));
+					res = slCallFunc(slCtx, (*mt)["__destroy__"], lineNum);
+				}
+
+				delete inst;
+				if (res == SL_ERROR) {
+					slPushError(slCtx, "gc: __destroy__ failed", 0, lineNum);
+					result = res;
+				}
+			}
+
+			// delete the reference
+			v.type = Variable::Type::Pointer;
+			v.value.p = nullptr;
+		}
+	}
+	return result;
+}
+
 int slCallFunction(slContext &slCtx, int newln)
 {
 	slScopeData scdat{};
 	slCtx.callStack.push_back(std::move(scdat));
 
-	int sr;
-	for (int ln = newln - 1; ln < slCtx.code.size(); )
+	int sr, ln;
+	for (ln = newln - 1; ln < slCtx.code.size(); )
 	{
 		int next;
 		sr = slDoString(slCtx, ln, &next);
@@ -934,43 +1048,44 @@ int slCallFunction(slContext &slCtx, int newln)
 			break;
 		ln = next;
 	}
+	int res = slRunGC(slCtx, ln);
 	slCtx.callStack.pop_back();
-	return sr;
+	return res;
 }
 
 int slCallFunc (
 	slContext &slCtx,
-	Variable const &v,
-	const char *buf,
+	Variable const &gv,
 	int lineNum,
-	slParseData const &p,
-	int *change = nullptr
+	slParseData *p,
+	int *change
 ) {
-	auto gv = slCtx.evaluate(p.part2);
+	const char *buf = slCtx.code[lineNum].c_str();
+	int diff = p != nullptr ? (p->beg3 - buf) : 0;
 
 	if (gv.type == Variable::Type::Function) {
 		size_t fn_id;
 		gv.get(fn_id);
 		if (fn_id >= slCtx.nativeFunctions.size()) {
-			slPushError(slCtx, "invalid native function", p.beg1 - buf, lineNum);
+			slPushError(slCtx, "call: invalid native function", diff, lineNum);
 			return SL_ERROR;
 		}
 		int res = slCtx.nativeFunctions[fn_id](&slCtx);
 		if (res != SL_OK) {
-			slPushError(slCtx, (std::string("calling native function ") + p.part2).c_str(), p.beg2 - buf, lineNum);
+			slPushError (slCtx, "call: native function", diff, lineNum);
 		}
 		return res;
 	}
 
 	if (gv.type != Variable::Type::Number) {
-		slPushError(slCtx, "invalid type", p.beg1 - buf, lineNum);
+		slPushError (slCtx, "call: invalid argument type", diff, lineNum);
 		return SL_ERROR;
 	}
 
 	int newln;
 	gv.get(newln);
 	if (newln == 0) {
-		slPushError(slCtx, "invalid label", p.beg1 - buf, lineNum);
+		slPushError (slCtx, "call: invalid label", diff, -1);
 		return SL_ERROR;
 	}
 
@@ -1271,6 +1386,9 @@ int sl_action6(slContext &slCtx, int lineNum, slParseData &p, int subaction, int
 		vref.type == Variable::Type::String ? "string" :
 		vref.type == Variable::Type::Bool ? "bool" :
 		vref.type == Variable::Type::Function ? "function" :
+		vref.type == Variable::Type::Metatable ? "metatable" :
+		vref.type == Variable::Type::Template ? "template" :
+		vref.type == Variable::Type::Instance ? "instance" :
 		"undefined";
 
 	auto res = Variable(std::string(resp));
@@ -1383,6 +1501,151 @@ int sl_action11(slContext &slCtx, int lineNum, slParseData &p, int subaction, in
 	const char *buf = slCtx.code[lineNum].c_str();
 	slPushError(slCtx, "cannot convert to number", p.beg3 - buf, lineNum);
 	return SL_ERROR;
+}
+
+// template
+int sl_action33(slContext &slCtx, int lineNum, slParseData &p, int subaction, int *change)
+{
+	Variable &vref = slCtx.assign(p.part3);
+	if (vref.type == Variable::Type::Template)
+		return SL_OK;
+
+	if (vref.type != Variable::Type::Metatable)
+	{
+		const char *buf = slCtx.code[lineNum].c_str();
+		slPushError(slCtx, "cannot convert to template", p.beg3 - buf, lineNum);
+		return SL_ERROR;
+	}
+
+	vref.type = Variable::Type::Template;
+	return SL_OK;
+}
+
+// metatable
+int sl_action34(slContext &slCtx, int lineNum, slParseData &p, int subaction, int *change)
+{
+	Variable &vref = slCtx.assign(p.part3);
+	if (vref.type == Variable::Type::Metatable)
+		return SL_OK;
+
+	if (vref.type != Variable::Type::Template && vref.type != Variable::Type::Instance)
+	{
+		const char *buf = slCtx.code[lineNum].c_str();
+		slPushError(slCtx, "cannot convert to metatable", p.beg3 - buf, lineNum);
+		return SL_ERROR;
+	}
+
+	vref.type = Variable::Type::Template;
+	return SL_OK;
+}
+
+// getting table element
+int sl_action35(slContext &slCtx, int lineNum, slParseData &p, int subaction, int *change)
+{
+	Variable &vref = slCtx.assign(p.part1);
+	if (vref.type != Variable::Type::Metatable &&
+		vref.type != Variable::Type::Template &&
+		vref.type != Variable::Type::Instance &&
+		vref.type != Variable::Type::Reference
+	) {
+		const char *buf = slCtx.code[lineNum].c_str();
+		slPushError(slCtx, "unsupported type", p.beg1 - buf, lineNum);
+		return SL_ERROR;
+	}
+
+	Variable index = std::move(slCtx.evaluate(p.part3));
+	std::string ind;
+	index.get(ind);
+
+	slMetatable *mt;
+	if (vref.type != Variable::Type::Reference)
+		mt = vref.pointer<slMetatable>();
+	else mt = vref.pointer<Variable>()->pointer<slMetatable>();
+
+	if (mt->count(ind)) {
+		slCtx.valueStack.push_back((*mt)[ind]);
+	}
+	else slCtx.valueStack.emplace_back();
+	return SL_OK;
+}
+
+// setting table element
+int sl_action36(slContext &slCtx, int lineNum, slParseData &p, int subaction, int *change)
+{
+	const char *buf = slCtx.code[lineNum].c_str();
+
+	Variable &vref = slCtx.assign(p.part1);
+	if (vref.type != Variable::Type::Metatable &&
+		vref.type != Variable::Type::Template &&
+		vref.type != Variable::Type::Instance &&
+		vref.type != Variable::Type::Reference
+	) {
+		slPushError(slCtx, "unsupported type", p.beg1 - buf, lineNum);
+		return SL_ERROR;
+	}
+
+	if (!slCtx.valueStack.size()) {
+		slPushError(slCtx, "stack is empty", p.beg3 - buf, lineNum);
+		return SL_ERROR;
+	}
+
+	Variable index = std::move(slCtx.evaluate(p.part3));
+	std::string ind;
+	index.get(ind);
+
+	slMetatable *mt;
+	if (vref.type != Variable::Type::Reference)
+		mt = vref.pointer<slMetatable>();
+	else mt = vref.pointer<Variable>()->pointer<slMetatable>();
+
+	(*mt)[ind] = std::move(slCtx.valueStack.back());
+	slCtx.valueStack.pop_back();
+
+	return SL_OK;
+}
+
+// class indexing
+int sl_action37(slContext &slCtx, int lineNum, slParseData &p, int subaction, int *change)
+{
+	Variable vref = std::move(slCtx.evaluate(p.part1));
+	if (vref.type != Variable::Type::Reference)
+	{
+		const char *buf = slCtx.code[lineNum].c_str();
+		slPushError(slCtx, "not a reference", p.beg1 - buf, lineNum);
+		return SL_ERROR;
+	}
+
+	std::string ind = p.part3;
+	auto &mt = *vref.pointer<Variable>()->pointer<slMetatable>();
+	if (mt.count(ind)) {
+		slCtx.valueStack.push_back(mt[ind]);
+	}
+	else slCtx.valueStack.emplace_back();
+
+	return SL_OK;
+}
+
+// class method calling
+int sl_action38(slContext &slCtx, int lineNum, slParseData &p, int subaction, int *change)
+{
+	const char *buf = slCtx.code[lineNum].c_str();
+	Variable ref = std::move(slCtx.evaluate(p.part1));
+
+	if (ref.type != Variable::Type::Reference)
+	{
+		slPushError(slCtx, "not a reference", p.beg1 - buf, lineNum);
+		return SL_ERROR;
+	}
+
+	std::string ind = p.part3;
+	auto &mt = *ref.pointer<Variable>()->pointer<slMetatable>();
+	if (!mt.count(ind)) {
+		slPushError(slCtx, "non-existent method", p.beg3 - buf, lineNum);
+		return SL_ERROR;
+	}
+
+	slCtx.valueStack.push_back(std::move(ref));
+	return slCallFunc(slCtx, mt[ind], lineNum, &p, change);
 }
 
 int sl_action12(slContext &slCtx, int lineNum, slParseData &p, int subaction, int *change)
@@ -1623,58 +1886,44 @@ int sl_action20(slContext &slCtx, int lineNum, slParseData &p, int subaction, in
 	return SL_RETURN;
 }
 
+// new
 int sl_action21(slContext &slCtx, int lineNum, slParseData &p, int subaction, int *change)
 {
 	const char *buf = slCtx.code[lineNum].c_str();
 
-	// @todo test
 	Variable v = slCtx.evaluate(p.part2);
-	if (v.type != Variable::Type::Pointer)
+	if (v.type != Variable::Type::Template)
 	{
-		slPushError(slCtx, "pointer required", p.beg1 - buf, lineNum);
+		slPushError(slCtx, "template object required", p.beg1 - buf, lineNum);
 		return SL_ERROR;
 	}
 
-	if (slCtx.valueStack.size() < 1)
+	// mt["__init__"]: constructor function
+	// mt["__destroy__"]: destructor function
+	auto &mt = *reinterpret_cast<slMetatable *>(v.value.p);
+	if (!mt.count("__init__"))
 	{
-		slPushError(slCtx, "stack is empty", p.beg1 - buf, lineNum);
-		return SL_ERROR;
-	}
-	Variable &len = slCtx.valueStack.back();
-	if (len.type != Variable::Type::Number)
-	{
-		slPushError(slCtx, "number required", p.beg1 - buf, lineNum);
+		slPushError(slCtx, "missing __init__ method", p.beg1 - buf, lineNum);
 		return SL_ERROR;
 	}
 
-	size_t arrlen;
-	len.get(arrlen);
-	Variable *ptr;
-	v.get(ptr);
+	// create instance with template methods and members copied
+	auto imt = new slMetatable(mt);
+	imt->erase("__init__"); // not needed after creation
 
-	// [0]: allocation function
-	// [1]: size
-	// [2]: constructor function
-	// [3]: destructor function
-	int res = slCallFunc(slCtx, ptr[0], buf, lineNum, p, change);
+	auto inst = new Variable(imt);
+	inst->type = Variable::Type::Instance;
+	inst->meta = 1; // 1 refcount
+
+	Variable ref(inst, Variable::Type::Reference);
+
+	// push on stack as argument of __init__
+	slCtx.valueStack.push_back(std::move(ref));
+
+	int res = slCallFunc(slCtx, mt["__init__"], lineNum, &p, change);
 	if (res != SL_OK)
 		return SL_ERROR;
 
-	size_t objsize;
-	ptr[1].get(objsize);
-	char *pptr;
-
-	Variable &obj = slCtx.valueStack.back();
-	obj.get(pptr);
-
-	for (size_t i = 0; i != arrlen; ++i)
-	{
-		Variable pt((void *)(pptr + i * objsize));
-		slCtx.valueStack.push_back(std::move(pt));
-		int rr = slCallFunc(slCtx, ptr[2], buf, lineNum, p, change);
-		if (res != SL_OK)
-			return SL_ERROR;
-	}
 	return SL_OK;
 }
 
@@ -1813,12 +2062,26 @@ int sl_action25(slContext &slCtx, int lineNum, slParseData &p, int subaction, in
 	return SL_OK;
 }
 
+// call
 int sl_action26(slContext &slCtx, int lineNum, slParseData &p, int subaction, int *change)
 {
-	// @todo remove extra argument buf
 	const char *buf = slCtx.code[lineNum].c_str();
 
-	int res = slCallFunc(slCtx, slCtx.evaluate(p.part2), buf, lineNum, p);
+	int res;
+	if (p.part2.size()) {
+		// @todo remove extra argument buf
+		// @todo std::move
+		res = slCallFunc(slCtx, slCtx.evaluate(p.part2), lineNum, &p);
+	}
+	else if (slCtx.valueStack.size())
+	{
+		res = slCallFunc(slCtx, slCtx.valueStack.back(), lineNum, &p);
+		slCtx.valueStack.pop_back();
+	}
+	else {
+		slPushError(slCtx, "call: function required", p.beg1 - buf, lineNum);
+		return SL_ERROR;
+	}
 	return res == SL_RETURN ? SL_OK : res;
 }
 
@@ -1870,7 +2133,11 @@ int sl_action27(slContext &slCtx, int lineNum, slParseData &p, int subaction, in
 		int lr = slDoString(slCtx, ll, &ll);
 		if (lr == SL_ERROR) {
 			ev = true;
+			std::stringstream ss;
+			for (auto &s: slCtx.stackTraceback)
+				ss << s << "\n";
 			slCtx.stackTraceback.clear();
+			slCtx.valueStack.push_back(Variable(ss.str()));
 			break;
 		}
 		else {
@@ -1931,8 +2198,16 @@ int sl_action30(slContext &slCtx, int lineNum, slParseData &p, int subaction, in
 	Variable filename = slCtx.evaluate(p.part2);
 	std::string fname;
 	filename.get(fname);
+
 	int res = slDoFile(slCtx, fname.c_str(), false);
-	return res == SL_RETURN ? SL_OK : res;
+	if (res == SL_ERROR)
+	{
+		const char *buf = slCtx.code[lineNum].c_str();
+		std::string msg = "include: file '" + fname + "' not found";
+		slPushError(slCtx, msg.c_str(), p.beg2 - buf, lineNum);
+		return res;
+	}
+	return SL_OK;
 }
 
 int sl_action31(slContext &slCtx, int lineNum, slParseData &p, int subaction, int *change)
@@ -1985,7 +2260,13 @@ static slBlockExecFn sl_actions[] = {
 	sl_action29,
 	sl_action30,
 	sl_action31,
-	sl_action32
+	sl_action32,
+	sl_action33,
+	sl_action34,
+	sl_action35,
+	sl_action36,
+	sl_action37,
+	sl_action38,
 };
 
 int slDoBlock(slContext &slCtx, int lineNum, slParseData &p, int *change = nullptr)
@@ -1997,7 +2278,7 @@ int slDoBlock(slContext &slCtx, int lineNum, slParseData &p, int *change = nullp
 		int action;
 		int subaction;
 
-		if (p.oper && p.part2 != "!")
+		if ((p.oper && p.part2 != "!") || p.part2 == ".")
 		{
 			if (p.part2 == "=") action = 0;
 			else if (p.part2 == "~")
@@ -2014,6 +2295,8 @@ int slDoBlock(slContext &slCtx, int lineNum, slParseData &p, int *change = nullp
 					else if (p.part1 == "string") action = 9;
 					else if (p.part1 == "pointer") action = 10;
 					else if (p.part1 == "function") action = 11;
+					else if (p.part1 == "template") action = 33;
+					else if (p.part1 == "metatable") action = 34;
 					else {
 						slPushError(slCtx, "invalid type", p.beg1 - buf, lineNum);
 						return SL_ERROR;
@@ -2082,6 +2365,10 @@ int slDoBlock(slContext &slCtx, int lineNum, slParseData &p, int *change = nullp
 					p.part2 == "&=" ? 6 :
 					p.part2 == "&&=" ? 7 : 8;
 			}
+			else if (p.part2 == "[") action = 35;
+			else if (p.part2 == "]") action = 36;
+			else if (p.part2 == ".") action = 37;
+			else if (p.part2 == ":") action = 38;
 			else {
 				slPushError(slCtx, "invalid operator", p.beg2 - buf, lineNum);
 				return SL_ERROR;
@@ -2103,7 +2390,7 @@ int slDoBlock(slContext &slCtx, int lineNum, slParseData &p, int *change = nullp
 		else if (p.part1 == "try") action = 27;
 		else if (p.part1 == "alloc") action = 28;
 		else if (p.part1 == "free") action = 29;
-		else if (p.part1 == "require") action = 30;
+		else if (p.part1 == "include") action = 30;
 		else if (p.part1 == "throw") action = 31;
 		else if (p.part1.size()) action = 32;
 		else {
@@ -2114,717 +2401,7 @@ int slDoBlock(slContext &slCtx, int lineNum, slParseData &p, int *change = nullp
 		p.action = action;
 		p.metadata = subaction;
 	}
-
 	return sl_actions[p.action](slCtx, lineNum, p, p.metadata, change);
-/*
-	if (p.oper && p.part2 != "!")
-	{
-		if (p.part2 == "=")
-		{
-			// action 0
-			Variable &right = slCtx.assign(p.part1);
-			if (p.part3.size())
-				right = std::move(slCtx.evaluate(p.part3));
-			else if (slCtx.valueStack.size()) {
-				right = slCtx.valueStack.back();
-				slCtx.valueStack.pop_back();
-			}
-		}
-		else if (p.part2 == "~")
-		{
-			if (!p.part3.size())
-			{
-				// put the line number into new variable
-				slCtx.assign(p.part1) = Variable(lineNum + 1);
-			}
-			else if (p.part1 == "in")
-			{
-				std::string inp;
-				std::cin >> inp;
-				slCtx.assign(p.part3) = Variable(inp);
-			}
-			else if (p.part1 == "out")
-			{
-				auto gv = slCtx.evaluate(p.part3);
-				std::string outp;
-				gv.get(outp);
-				std::cout << outp;
-			}
-			else if (p.part1 == "split")
-			{
-				Variable &vref = slCtx.assign(p.part3);
-				if (vref.type != Variable::Type::String) {
-					slPushError(slCtx, "string required", p.beg3 - buf, lineNum);
-					return SL_ERROR;
-				}
-				std::string vstr;
-				vref.get(vstr);
-				Variable *arr = new Variable[vstr.size()];
-				for (size_t i = 0; i < vstr.size(); ++i)
-					arr[i] = Variable(std::string(&vstr[i], 1));
-				
-				Variable res((void *)arr);
-				slCtx.valueStack.push_back(std::move(res));
-			}
-			else if (p.part1 == "length")
-			{
-				Variable &vref = slCtx.assign(p.part3);
-				if (vref.type != Variable::Type::String) {
-					slPushError(slCtx, "string required", p.beg3 - buf, lineNum);
-					return SL_ERROR;
-				}
-				std::string vstr;
-				vref.get(vstr);
-				Variable res(vstr.size());
-				slCtx.valueStack.push_back(std::move(res));
-			}
-			else if (p.part1 == "type")
-			{
-				Variable &vref = slCtx.assign(p.part3);
-				
-				const char *resp =
-					vref.type == Variable::Type::Pointer ? "pointer" :
-					vref.type == Variable::Type::Number ? "number" :
-					vref.type == Variable::Type::String ? "string" :
-					vref.type == Variable::Type::Bool ? "bool" :
-					vref.type == Variable::Type::Function ? "function" :
-					"undefined";
-
-				auto res = Variable(std::string(resp));
-				slCtx.valueStack.push_back(std::move(res));
-			}
-			else
-			{
-				Variable &vref = slCtx.assign(p.part3);
-				if (p.part1 == "bool")
-				{
-					if (vref.type == Variable::Type::Bool)
-						return SL_OK;
-
-					bool v;
-					vref.get(v);
-					vref = Variable(v);
-				}
-				else if (p.part1 == "number")
-				{
-					if (vref.type == Variable::Type::Number)
-						return SL_OK;
-
-					if (vref.type == Variable::Type::String)
-					{
-						std::string st;
-						vref.get(st);
-						std::stringstream sst {st};
-						if (st.find('.') != std::string::npos ||
-							st.find('e') != std::string::npos
-						) {
-							double vd;
-							sst >> vd;
-							vref = Variable(vd);
-						}
-						else
-						{
-							int64_t vi;
-							sst >> vi;
-							vref = Variable(vi);
-						}
-					}
-					else if (vref.type == Variable::Type::Pointer)
-					{
-						vref.type = Variable::Type::Number;
-						vref.meta = sizeof(size_t);
-					}
-					else {
-						slPushError(slCtx, "cannot convert to number", p.beg3 - buf, lineNum);
-						return SL_ERROR;
-					}
-				}
-				else if (p.part1 == "string")
-				{
-					if (vref.type == Variable::Type::String)
-						return SL_OK;
-
-					std::string st;
-					vref.get(st);
-					vref = Variable(st);
-				}
-				else if (p.part1 == "pointer")
-				{
-					if (vref.type == Variable::Type::Pointer)
-						return SL_OK;
-
-					if (vref.type == Variable::Type::Number)
-					{
-						size_t p;
-						vref.get(p);
-						vref.type = Variable::Type::Pointer;
-						vref.value.p = (void *)p;
-					}
-					else {
-						slPushError(slCtx, "cannot convert to pointer", p.beg3 - buf, lineNum);
-						return SL_ERROR;
-					}
-				}
-				else if (p.part1 == "function")
-				{
-					if (vref.type == Variable::Type::Function)
-						return SL_OK;
-
-					if (vref.type == Variable::Type::Number)
-					{
-						uint64_t fn_num;
-						vref.get(fn_num);
-						vref = Variable(fn_num, Variable::Type::Function);
-						return SL_OK;
-					}
-					slPushError(slCtx, "cannot convert to number", p.beg3 - buf, lineNum);
-					return SL_ERROR;
-				}
-				else {
-					slPushError(slCtx, "invalid type", p.beg1 - buf, lineNum);
-					return SL_ERROR;
-				}
-			}
-		}
-		else if (p.part2 == "<-")
-		{
-			Variable &left = slCtx.assign(p.part1);
-			
-			Variable right;
-			if (p.part3.size())
-				right = slCtx.evaluate(p.part3);
-			else if (slCtx.valueStack.size()) {
-				right = slCtx.valueStack.back();
-				slCtx.valueStack.pop_back();
-			}
-			else {
-				errStackEmpty(p.beg2 - buf, lineNum);
-				return SL_ERROR;
-			}
-
-			if (right.type != Variable::Type::Pointer) {
-				slPushError(slCtx, "pointer required", p.beg3 - buf, lineNum);
-				return SL_ERROR;
-			}
-
-			void *vr;
-			right.get(vr);
-			left = *reinterpret_cast<Variable *>(vr);
-		}
-		else if (p.part2 == "->")
-		{
-			Variable left = slCtx.evaluate(p.part1);
-			
-			Variable right;
-			if (p.part3.size())
-				right = slCtx.evaluate(p.part3);
-			else if (slCtx.valueStack.size()) {
-				right = slCtx.valueStack.back();
-				slCtx.valueStack.pop_back();
-			}
-			else {
-				errStackEmpty(p.beg2 - buf, lineNum);
-				return SL_ERROR;
-			}
-
-			if (right.type != Variable::Type::Pointer) {
-				slPushError(slCtx, "pointer required", p.beg3 - buf, lineNum);
-				return SL_ERROR;
-			}
-
-			void *vr;
-			right.get(vr);
-			*reinterpret_cast<Variable *>(vr) = left;
-		}
-		else if (p.part2 == "==" || p.part2 == "!=" || p.part2 == "<" || p.part2 == ">" || p.part2 == "<=" || p.part2 == ">=")
-		{
-			Variable left = slCtx.evaluate(p.part1);
-			Variable right = slCtx.evaluate(p.part3);
-			auto rel = left.compare(right);
-
-			bool result;
-			if (p.part2 == "==")
-				result = rel == Variable::Rel::Equal;
-			else if (p.part2 == "!=")
-				result = rel == Variable::Rel::NotEqual;
-			else if (p.part2 == "<")
-				result = rel == Variable::Rel::Less;
-			else if (p.part2 == ">")
-				result = rel == Variable::Rel::Greater;
-			else if (p.part2 == "<=")
-				result = rel == Variable::Rel::Less || rel == Variable::Rel::Equal;
-			else result = rel == Variable::Rel::Greater || rel == Variable::Rel::Equal;
-			
-			Variable v(result);
-			slCtx.valueStack.push_back(std::move(v));
-		}
-		else if (
-			p.part2 == "+" ||
-			p.part2 == "-" ||
-			p.part2 == "*" ||
-			p.part2 == "/" ||
-			p.part2 == "|" ||
-			p.part2 == "||" ||
-			p.part2 == "&" ||
-			p.part2 == "&&" ||
-			p.part2 == "^"
-		) {
-			Variable left = slCtx.evaluate(p.part1);
-			Variable right;
-			if (p.part3.size())
-				right = slCtx.evaluate(p.part3);
-			else if (slCtx.valueStack.size()) {
-				right = slCtx.valueStack.back();
-				slCtx.valueStack.pop_back();
-			}
-			else {
-				errStackEmpty(p.beg2 - buf, lineNum);
-				return SL_ERROR;
-			}
-			
-			int type =
-				p.part2 == "+" ? 0 :
-				p.part2 == "-" ? 1 :
-				p.part2 == "*" ? 2 :
-				p.part2 == "/" ? 3 :
-				p.part2 == "|" ? 4 :
-				p.part2 == "||" ? 5 :
-				p.part2 == "&" ? 6 :
-				p.part2 == "&&" ? 7 :
-				8;
-
-			const char *errMsg {""};
-			int res = execOper(left, right, type, &errMsg);
-			if (res != SL_OK) {
-				slPushError(slCtx, errMsg, p.beg1 - buf);
-				return res;
-			}
-			slCtx.valueStack.push_back(std::move(left));
-			return SL_OK;
-		}
-		else if (
-			p.part2 == "+=" ||
-			p.part2 == "-=" ||
-			p.part2 == "*=" ||
-			p.part2 == "/=" ||
-			p.part2 == "|=" ||
-			p.part2 == "||=" ||
-			p.part2 == "&=" ||
-			p.part2 == "&&=" ||
-			p.part2 == "^="
-		) {
-			Variable right = slCtx.evaluate(p.part3);
-			Variable *lft = slCtx.findvar(p.part1);
-			if (!lft) {
-				slPushError(slCtx, "undefined variable ", p.beg1 - buf) += p.part1;
-				return SL_ERROR;
-			}
-			Variable &left = *lft;
-
-			int type =
-				p.part2 == "+=" ? 0 :
-				p.part2 == "-=" ? 1 :
-				p.part2 == "*=" ? 2 :
-				p.part2 == "/=" ? 3 :
-				p.part2 == "|=" ? 4 :
-				p.part2 == "||=" ? 5 :
-				p.part2 == "&=" ? 6 :
-				p.part2 == "&&=" ? 7 :
-				8;
-
-			const char *errMsg {""};
-			int res = execOper(left, right, type, &errMsg);
-			if (res != SL_OK) {
-				slPushError(slCtx, errMsg, p.beg1 - buf);
-				return res;
-			}
-			return SL_OK;
-		}
-		else {
-			slPushError(slCtx, "invalid operator", p.beg2 - buf, lineNum);
-			return SL_ERROR;
-		}
-	}
-	else if (p.part1 == "while")
-	{
-		int lvl = 1;
-		int l;
-		for (l = lineNum + 1; l != slCtx.code.size(); ++l)
-		{
-			std::vector<slParseData> *pd;
-			int lr = slParseString(slCtx, l, pd);
-			if (lr == SL_ERROR)
-				return lr;
-
-			bool brk = false;
-			for (auto const &p: *pd)
-			{
-				// @todo optimize: pick ready slParseData from slCtx instead of this
-				if (p.part1 == "end")
-					--lvl;
-				else if (p.part1 == "while" || p.part1 == "if" || p.part1 == "try")
-					++lvl;
-				if (!lvl) {
-					brk = true;
-					break;
-				}
-			}
-			if (brk) break;
-		}
-		if (lvl) {
-			slPushError(slCtx, "unclosed 'while'", p.beg1 - buf, l);
-			return SL_ERROR;
-		}
-
-		bool ev = true;
-		if (slCtx.valueStack.size()) {
-			slCtx.valueStack.back().get(ev);
-			slCtx.valueStack.pop_back();
-		}
-		if (p.part2 == "!")
-			ev = !ev;
-
-		if (!ev) {
-			if (change) *change = l + 1;
-			return SL_OK;
-		}
-
-		bool brk = false;
-		for (int ll = lineNum + 1; ll < l; )
-		{
-			int lr = slDoString(slCtx, ll, &ll);
-			if (lr == SL_ERROR)
-				return SL_ERROR;
-			if (lr == SL_BREAK) {
-				brk = true;
-				break;
-			}
-			if (lr == SL_CONTINUE)
-				break;
-			if (lr == SL_RETURN)
-				return SL_RETURN;
-		}
-
-		if (change) *change = brk ? l + 1 : lineNum;
-		return SL_OK;
-	}
-	else if (p.part1 == "break")
-	{
-		return SL_BREAK;
-	}
-	else if (p.part1 == "continue")
-	{
-		return SL_CONTINUE;
-	}
-	else if (p.part1 == "return")
-	{
-		return SL_RETURN;
-	}
-	else if (p.part1 == "new")
-	{
-		// @todo test
-		Variable v = slCtx.evaluate(p.part2);
-		if (v.type != Variable::Type::Pointer)
-		{
-			slPushError(slCtx, "pointer required", p.beg1 - buf, lineNum);
-			return SL_ERROR;
-		}
-
-		if (slCtx.valueStack.size() < 1)
-		{
-			slPushError(slCtx, "stack is empty", p.beg1 - buf, lineNum);
-			return SL_ERROR;
-		}
-		Variable &len = slCtx.valueStack.back();
-		if (len.type != Variable::Type::Number)
-		{
-			slPushError(slCtx, "number required", p.beg1 - buf, lineNum);
-			return SL_ERROR;
-		}
-
-		size_t arrlen;
-		len.get(arrlen);
-		Variable *ptr;
-		v.get(ptr);
-
-		// [0]: allocation function
-		// [1]: size
-		// [2]: constructor function
-		// [3]: destructor function
-		int res = slCallFunc(slCtx, ptr[0], buf, lineNum, p, change);
-		if (res != SL_OK)
-			return SL_ERROR;
-
-		size_t objsize;
-		ptr[1].get(objsize);
-		char *pptr;
-
-		Variable &obj = slCtx.valueStack.back();
-		obj.get(pptr);
-
-		for (size_t i = 0; i != arrlen; ++i)
-		{
-			Variable pt((void *)(pptr + i * objsize));
-			slCtx.valueStack.push_back(std::move(pt));
-			int rr = slCallFunc(slCtx, ptr[2], buf, lineNum, p, change);
-			if (res != SL_OK)
-				return SL_ERROR;
-		}
-		return SL_OK;
-	}
-	else if (p.part1 == "stack")
-	{
-		if (p.part2.size()) {
-			Variable v = slCtx.evaluate(p.part2);
-			int vv;
-			v.get(vv);
-			int stacksize = slCtx.valueStack.size();
-			if (vv + 1 > stacksize || vv < 0)
-			{
-				slPushError(slCtx, "invalid stack index", p.beg1 - buf, lineNum);
-				return SL_ERROR;
-			}
-			slCtx.valueStack.push_back(slCtx.valueStack[stacksize - 1 - vv]);
-		}
-		else slCtx.valueStack.clear();
-	}
-	else if (p.part1 == "if")
-	{
-		int lvl = 1;
-		int l;
-		int sep = 0;
-		for (l = lineNum + 1; l != slCtx.code.size(); ++l)
-		{
-			std::vector<slParseData> *pd;
-			int lr = slParseString(slCtx, l, pd);
-			if (lr == SL_ERROR)
-				return lr;
-
-			bool brk = false;
-			for (auto const &p: *pd)
-			{
-				if (p.part1 == "end")
-					--lvl;
-				else if (p.part1 == "if" || p.part1 == "while" || p.part1 == "try")
-					++lvl;
-				else if (!sep && p.part1 == "else")
-					sep = l;
-				if (!lvl) {
-					brk = true;
-					break;
-				}
-			}
-			if (brk)
-				break;
-		}
-		if (lvl) {
-			slPushError(slCtx, "unclosed 'if'", p.beg1 - buf, l);
-			return SL_ERROR;
-		}
-
-		bool ev = true;
-		if (slCtx.valueStack.size()) {
-			slCtx.valueStack.back().get(ev);
-			slCtx.valueStack.pop_back();
-		}
-		if (p.part2 == "!")
-			ev = !ev;
-		
-		if (ev)
-		{
-			int stopl = sep ? sep : l;
-			for (int ll = lineNum + 1; ll < stopl; )
-			{
-				int lr = slDoString(slCtx, ll, &ll);
-				if (lr == SL_ERROR)
-					return SL_ERROR;
-				if (lr == SL_BREAK)
-					return SL_BREAK;
-				if (lr == SL_CONTINUE)
-					return SL_CONTINUE;
-				if (lr == SL_RETURN)
-					return SL_RETURN;
-			}
-		}
-		else if (sep)
-		{
-			for (int ll = sep + 1; ll < l; )
-			{
-				int lr = slDoString(slCtx, ll, &ll);
-				if (lr == SL_ERROR)
-					return SL_ERROR;
-				if (lr == SL_BREAK)
-					return SL_BREAK;
-				if (lr == SL_CONTINUE)
-					return SL_CONTINUE;
-				if (lr == SL_RETURN)
-					return SL_RETURN;
-			}
-		}
-		if (change) *change = l + 1;
-		return SL_OK;
-	}
-	else if (p.part1 == "or" || p.part1 == "and")
-	{
-		if (slCtx.valueStack.size() < 2)
-		{
-			slPushError(slCtx, "not enough stack size", p.beg1 - buf, lineNum);
-			return SL_ERROR;
-		}
-
-		bool v1, v2;
-		slCtx.valueStack.back().get(v1);
-		slCtx.valueStack.pop_back();
-		slCtx.valueStack.back().get(v2);
-		slCtx.valueStack.pop_back();
-
-		bool res = (p.part1 == "or") ? (v1 || v2) : (v1 && v2);
-		Variable v(res);
-		slCtx.valueStack.push_back(std::move(v));
-
-		return SL_OK;
-	}
-	else if (p.part1 == "goto")
-	{
-		auto gv = slCtx.evaluate(p.part2);
-		int newln;
-		gv.get(newln);
-		if (newln == 0) {
-			slPushError(slCtx, "invalid label", p.beg1 - buf, lineNum);
-			return SL_ERROR;
-		}
-
-		if (change) *change = newln - 1;
-		return SL_OK;
-	}
-	else if (p.part1 == "call")
-	{
-		int res = slCallFunc(slCtx, slCtx.evaluate(p.part2), buf, lineNum, p);
-		return res == SL_RETURN ? SL_OK : res;
-	}
-	else if (p.part1 == "try")
-	{
-		int l;
-		int lvl = 1;
-		int sep = 0; // position of catch
-		for (l = lineNum + 1; l != slCtx.code.size(); ++l)
-		{
-			std::vector<slParseData> *pd;
-			int lr = slParseString(slCtx, l, pd);
-			if (lr == SL_ERROR)
-				return lr;
-
-			bool brk = false;
-			for (auto const &p: *pd)
-			{
-				if (p.part1 == "end")
-					--lvl;
-				else if (p.part1 == "if" || p.part1 == "while" || p.part1 == "try")
-					++lvl;
-				else if (!sep && p.part1 == "catch")
-					sep = l;
-				if (!lvl) {
-					brk = true;
-					break;
-				}
-			}
-			if (brk)
-				break;
-		}
-		if (lvl) {
-			slPushError(slCtx, "unclosed 'try'", p.beg1 - buf, l);
-			return SL_ERROR;
-		}
-		if (!sep) {
-			slPushError(slCtx, "missing 'catch' block", p.beg1 - buf, l);
-			return SL_ERROR;
-		}
-
-		// execute 'try' block
-		bool ev = false;
-		for (int ll = lineNum + 1; ll < sep; )
-		{
-			int lr = slDoString(slCtx, ll, &ll);
-			if (lr == SL_ERROR) {
-				ev = true;
-				slCtx.stackTraceback.clear();
-				break;
-			}
-			else {
-				if (lr == SL_BREAK)
-					return SL_BREAK;
-				if (lr == SL_CONTINUE)
-					return SL_CONTINUE;
-				if (lr == SL_RETURN)
-					return SL_RETURN;
-			}
-		}
-
-		// catch block
-		if (ev)
-		{
-			for (int ll = sep + 1; ll < l; )
-			{
-				int lr = slDoString(slCtx, ll, &ll);
-				if (lr == SL_ERROR)
-					return SL_ERROR;
-				if (lr == SL_BREAK)
-					return SL_BREAK;
-				if (lr == SL_CONTINUE)
-					return SL_CONTINUE;
-				if (lr == SL_RETURN)
-					return SL_RETURN;
-			}
-		}
-		if (change) *change = l + 1;
-		return SL_OK;
-	}
-	else if (p.part1 == "alloc")
-	{
-		Variable &left = slCtx.vars[p.part2];
-		int arrlen;
-		slCtx.evaluate(p.part3).get(arrlen);
-
-		if (arrlen)
-		{
-			Variable *arr = new Variable[arrlen];
-			left = Variable((void *)arr);
-		}
-	}
-	else if (p.part1 == "free")
-	{
-		Variable &left = slCtx.vars[p.part2];
-		void *arr;
-		left.get(arr);
-		delete[] reinterpret_cast<Variable *>(arr);
-	}
-	else if (p.part1 == "require")
-	{
-		Variable filename = slCtx.evaluate(p.part2);
-		std::string fname;
-		filename.get(fname);
-		int res = slDoFile(slCtx, fname.c_str(), false);
-		return res == SL_RETURN ? SL_OK : res;
-	}
-	else if (p.part1 == "throw")
-	{
-		Variable filename = slCtx.evaluate(p.part2);
-		std::string e;
-		filename.get(e);
-		slPushError(slCtx, e.c_str(), p.beg2 - buf, lineNum);
-		return SL_ERROR;
-	}
-	else if (p.part1.size())
-	{
-		Variable v = slCtx.evaluate(p.part1);
-		slCtx.valueStack.push_back(std::move(v));
-	}
-	else {
-		slPushError(slCtx, "syntax error", 0, lineNum);
-		return SL_ERROR;
-	}
-	return SL_OK;
-	*/
 }
 
 int slDoString(slContext &slCtx, int lineNum, int *change)
@@ -2833,7 +2410,7 @@ int slDoString(slContext &slCtx, int lineNum, int *change)
 	int pars = slParseString(slCtx, lineNum, p);
 	if (pars == SL_ERROR)
 		return pars;
-	
+
 	size_t psize = p->size();
 	for (size_t i = 0u; i != psize; ++i)
 	{
@@ -2861,13 +2438,18 @@ int slDoString(slContext &slCtx, int lineNum, int *change)
 			}
 		}
 	}
-	
+
 	if (change) *change = lineNum + 1;
 	return SL_OK;
 }
 
 void loadlibs(slContext &ctx)
 {
+	ctx.vars["getcwd"] = Variable((int)ctx.nativeFunctions.size(), Variable::Type::Function);
+	ctx.nativeFunctions.push_back([](slContext *ctx) {
+		ctx->valueStack.push_back(Variable(ctx->mainpath.string()));
+		return SL_OK;
+	});
 	ctx.vars["malloc"] = Variable((int)ctx.nativeFunctions.size(), Variable::Type::Function);
 	ctx.nativeFunctions.push_back([](slContext *ctx) {
 		if (ctx->valueStack.size() < 1)
@@ -2919,7 +2501,7 @@ void loadlibs(slContext &ctx)
 		if (ctx->valueStack.size() < 1)
 			return SL_ERROR;
 
-		auto v = ctx->valueStack.back();
+		Variable v {std::move(ctx->valueStack.back())};
 		ctx->valueStack.pop_back();
 
 		Variable res;
@@ -2940,7 +2522,7 @@ void loadlibs(slContext &ctx)
 		if (ctx->valueStack.size() < 1)
 			return SL_ERROR;
 
-		auto v = ctx->valueStack.back();
+		Variable v {std::move(ctx->valueStack.back())};
 		ctx->valueStack.pop_back();
 
 		if (v.type != Variable::Type::String)
@@ -3053,7 +2635,7 @@ void loadlibs(slContext &ctx)
 		ctx->valueStack.back().get((void *&)fp);
 		ctx->valueStack.pop_back();
 
-		long res = ftell(fp);
+		uint64_t res = ftell(fp);
 		ctx->valueStack.push_back(Variable(res));
 		return SL_OK;
 	});
@@ -4128,25 +3710,29 @@ void loadlibs(slContext &ctx)
 
 int slDoFile(slContext &slCtx, const char *filename, bool fullpath)
 {
+	fs::path fpath {filename};
+	slCtx.vars["__filename__"] = Variable(fpath.filename().string());
+	slCtx.vars["__fullpath__"] = Variable(fpath.string());
+
 	FILE *fin;
 	if (fullpath) {
 		fin = fopen(filename, "r");
 	}
 	else {
 		fs::path fpath = slCtx.mainpath / filename;
-		fin = fopen(fpath.c_str(), "r");
+		fin = fopen(fpath.string().c_str(), "r");
 	}
 	if (!fin)
 		return SL_ERROR;
 
 	int ln = slCtx.code.size();
 	const int newcode_begin = ln;
-	
+
 	char buf[1024];
 	while (fgets(buf, 1023, fin))
 		slCtx.code.push_back(std::string(buf));
 	fclose(fin);
-	
+
 	// preload labels
 	while (ln < slCtx.code.size())
 	{
@@ -4156,10 +3742,10 @@ int slDoFile(slContext &slCtx, const char *filename, bool fullpath)
 			return sr;
 		ln = next;
 	}
-	
+
 	ln = slCtx.line; // backup line
 	slCtx.line = newcode_begin; // start executing new code
-	const size_t current_end = slCtx.code.size(); // dont forget that executed code may include other files and increase code size
+	const size_t current_end = slCtx.code.size(); // don't forget that executed code may include other files and increase code size
 
 	while (slCtx.line < current_end)
 	{
@@ -4185,7 +3771,10 @@ int slDoFile(const char *filename)
 {
 	slContext slCtx;
 	loadlibs(slCtx);
-	slCtx.mainpath = fs::path(filename).parent_path();
+	fs::path fpath {filename};
+	slCtx.mainpath = fpath.parent_path();
+	slCtx.vars["__main_filename__"] = Variable(fpath.filename().string());
+	slCtx.vars["__main_fullpath__"] = Variable(fpath.string());
 	return slDoFile(slCtx, filename);
 }
 
@@ -4196,6 +3785,7 @@ int main(int argc, char **argv)
 
 	slContext slCtx;
 	loadlibs(slCtx);
+	slCtx.mainpath = ".";
 
 	while (slCtx.line < slCtx.code.size())
 	{

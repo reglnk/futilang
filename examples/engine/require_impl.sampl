@@ -1,0 +1,9 @@
+return;
+
+require ~
+	path =;
+	if !; __SAMPL_INC [ path
+		include path;
+		__SAMPL_INC ] path; 1
+	end
+	return

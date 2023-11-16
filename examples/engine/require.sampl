@@ -1,0 +1,15 @@
+# usage:
+# include "require.sampl"
+# call require; <file1>
+# call require; <file2>
+# ...
+# This should reduce memory load and CPU load
+# by avoiding file duplicates while including
+
+if !; __SAMPL_INC
+	__SAMPL_INC = {}
+end
+if !; __SAMPL_INC [ "require.sampl"
+	include "require_impl.sampl"
+	__SAMPL_INC ] "require.sampl"; 1
+end

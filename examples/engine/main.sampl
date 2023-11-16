@@ -1,6 +1,6 @@
-require "libs.sampl"
-
-call print; 78
+include "require.sampl"
+call require; "libs.sampl"
+Shader =; call require; "shader.sampl"
 
 width =;
 height =;
@@ -145,93 +145,31 @@ main ~
 	fshSource += "  FragColor = vec4(fColor.x, fColor.y, fColor.z, 1.0f);\n"
 	fshSource += "}\n"
 
-	# clear value stack
-	stack;
+	shprog =; new Shader
 
-	vshLen =; call strlen; vshSource
-	fshLen =; call strlen; fshSource
-	vshCstr =; call to_cstr; vshSource
-	fshCstr =; call to_cstr; fshSource
-
-	tp =; type ~ vshCstr;
-	out ~ tp;
-	out ~ "\n"
-
-	out ~ "length vs: ";
-	out ~ "\n"; out ~ vshLen;
-
-	out ~ "length fs: ";
-	out ~ "\n"; out ~ fshLen;
-
-	# intended to have type 'const char **'
-	# no reference can be taken in SAMPL, so allocate new raw memory
-	shaderSourceArr =; call newvp; 1
-
-	vertexShader =; call glCreateShader; GL_VERTEX_SHADER
-	call writevp; shaderSourceArr; 0; vshCstr
-	call glShaderSource; vertexShader; 1; shaderSourceArr; 0
-	call glCompileShader; vertexShader
-
-	successp =; call newi32; 1
-	call glGetShaderiv; vertexShader; GL_COMPILE_STATUS; successp
-	success =; call readi32; successp; 0
-
-	if !; success
-		out ~ "Failed to compile vertex shader\n";
-		infoLog =; call newi8; 1024
-		call glGetShaderInfoLog; vertexShader; 1024; 0; infoLog
-		logLen =; call strlen; infoLog
-		info =; call to_string; infoLog; logLen;
-		out ~ "info log: ";
-		out ~ info;
-		out ~ "\n";
-		call deli8; infoLog
+	res =; shprog:compile; vshSource; GL_VERTEX_SHADER
+	if; res
 		call glfwTerminate;
-		return;
+		return
 	end
-
-	fragmentShader =; call glCreateShader; GL_FRAGMENT_SHADER
-	call writevp; shaderSourceArr; 0; fshCstr
-	call glShaderSource; fragmentShader; 1; shaderSourceArr; 0
-	call glCompileShader; fragmentShader
-
-	call glGetShaderiv; vertexShader; GL_COMPILE_STATUS; successp
-	success =; call readi32; successp; 0
-
-	if !; success
-		out ~ "Failed to compile fragment shader\n";
-		infoLog =; call newi8; 1024
-		call glGetShaderInfoLog; fragmentShader; 1024; 0; infoLog
-		logLen =; call strlen; infoLog
-		info =; call to_string; infoLog; logLen;
-		out ~ "info log: ";
-		out ~ info;
-		out ~ "\n";
-		call deli8; infoLog
+	res =; shprog:compile; fshSource; GL_FRAGMENT_SHADER
+	if; res
 		call glfwTerminate;
-		return;
+		return
 	end
-
-	shaderProg =; call glCreateProgram;
-	if !; shaderProg
-		out ~ "Failed to create shader program\n";
+	res =; shprog:link;
+	if; res
 		call glfwTerminate;
-		return;
+		return
 	end
-
-	call glAttachShader; shaderProg; vertexShader
-	call glAttachShader; shaderProg; fragmentShader
-	call glLinkProgram; shaderProg
-
-	# call glDeleteShader; vertexShader
-	# call glDeleteShader; fragmentShader
 
 	angle =; 0.0
 
 	while !; call glfwWindowShouldClose; window
 		call glfwPollEvents;
 		call glClear; GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT
-		call glUseProgram; shaderProg
+
+		shprog:use;
 		call glBindVertexArray; call readi32; vao; 0
 		call glDrawElements; GL_TRIANGLES; 3; GL_UNSIGNED_INT; 0
 
