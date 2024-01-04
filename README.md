@@ -1,4 +1,4 @@
-# SAPLANG
+# SAPLANGG
 Useless programming language made in ~2 months. Includes:
 - miserable syntax
 - all interpreter codebase in single C++ file
