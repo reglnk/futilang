@@ -1,6 +1,6 @@
-include "require.sampl"
-call require; "libs.sampl"
-Shader =; call require; "shader.sampl"
+include "require.sapl"
+call require; "libs.sapl"
+Shader =; call require; "shader.sapl"
 
 width =;
 height =;

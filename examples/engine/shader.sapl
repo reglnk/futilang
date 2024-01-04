@@ -1,6 +1,6 @@
-include "require.sampl"
+include "require.sapl"
 
-call require; "libs.sampl"
+call require; "libs.sapl"
 
 Shader =; {}
 Shader ] "__init__"; Shader__init

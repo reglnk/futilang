@@ -84,10 +84,6 @@ public:
 	static constexpr int f_flags = 0x3000;
 	int meta = 0;
 
-	Variable(): type(Type::Pointer) {
-		value.p = nullptr;
-	}
-
 protected:
 	constexpr inline void mCopyVar(const Variable &v)
 	{
@@ -98,7 +94,7 @@ protected:
 		else {
 			value = v.value;
 			if (type == Type::Reference)
-				++reinterpret_cast<Variable *>(value.p)->meta; // increase refcount
+				++pointer<Variable>()->meta; // increase refcount
 		}
 	}
 	constexpr inline void mMoveVar(Variable &&rv)
@@ -123,6 +119,10 @@ public:
 	template<typename T>
 	constexpr inline T *pointer() {
 		return reinterpret_cast<T *>(value.p);
+	}
+
+	Variable(): type(Type::Pointer) {
+		value.p = nullptr;
 	}
 
 	Variable(const Variable &v): type(v.type), meta(v.meta)
@@ -1015,7 +1015,7 @@ int slRunGC(slContext &slCtx, int lineNum)
 				int res = SL_OK;
 				auto mt = inst->pointer<slMetatable>();
 				if (mt->count("__destroy__")) {
-					slCtx.valueStack.push_back(std::move(v));
+					slCtx.valueStack.push_back(v);
 					res = slCallFunc(slCtx, (*mt)["__destroy__"], lineNum);
 				}
 

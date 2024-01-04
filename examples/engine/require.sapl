@@ -1,15 +1,15 @@
 # usage:
-# include "require.sampl"
+# include "require.sapl"
 # call require; <file1>
 # call require; <file2>
 # ...
 # This should reduce memory load and CPU load
 # by avoiding file duplicates while including
 
-if !; __SAMPL_INC
-	__SAMPL_INC = {}
+if !; __SAPL_INC
+	__SAPL_INC = {}
 end
-if !; __SAMPL_INC [ "require.sampl"
-	include "require_impl.sampl"
-	__SAMPL_INC ] "require.sampl"; 1
+if !; __SAPL_INC [ "require.sapl"
+	include "require_impl.sapl"
+	__SAPL_INC ] "require.sapl"; 1
 end

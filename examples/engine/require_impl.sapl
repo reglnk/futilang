@@ -2,8 +2,8 @@ return;
 
 require ~
 	path =;
-	if !; __SAMPL_INC [ path
+	if !; __SAPL_INC [ path
 		include path;
-		__SAMPL_INC ] path; 1
+		__SAPL_INC ] path; 1
 	end
 	return
