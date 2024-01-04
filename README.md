@@ -1,4 +1,4 @@
-# SAPL
+# SAPLANG
 Useless programming language made in ~2 months. Includes:
 - miserable syntax
 - all interpreter codebase in single C++ file
@@ -17,13 +17,13 @@ I have no time to debug it rn, but nevermind it's not bug it's feature =]]
 
 # Building
 1. download the repo in zip file
-2. unzip it to `sapl` into your home folder (yeah it best builds on linux)
+2. unzip it to `saplang` into your home folder (yeah it best builds on linux)
    ```bash
-   unzip -qo sapl.zip
-   rm sapl.zip
+   unzip -qo saplang.zip
+   rm saplang.zip
    ```
 3. while not leaving bash after previous commands,
    ```bash
-   rm -r sapl
+   rm -r saplang
    ```
 Done.
