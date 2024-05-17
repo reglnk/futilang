@@ -9,6 +9,7 @@
 #include <functional>
 #include <cassert>
 #include <filesystem>
+#include <climits>
 
 #include <glad/gl.h>
 #include <GLFW/glfw3.h>
@@ -1012,6 +1013,8 @@ int slRunGC(slContext &slCtx, int lineNum)
 
 			if (!inst->meta)
 			{
+				// prevent any further triggers of this branch in further added scopes
+				inst->meta = INT_MIN;
 				int res = SL_OK;
 				auto mt = inst->pointer<slMetatable>();
 				if (mt->count("__destroy__")) {
